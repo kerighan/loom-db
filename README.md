@@ -27,3 +27,12 @@ for i in tqdm(range(N), desc="write"):
 for i in tqdm(range(N), desc="read"):
     db[f"key_{i}"]
 ```
+
+Load database and get data:
+
+```python
+import loom
+
+db = loom.Dict("dict.loom")
+print(db["key_12345"])
+```
