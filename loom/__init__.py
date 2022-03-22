@@ -1,1 +1,1 @@
-from .database import DB
+from .database import DB, Dict

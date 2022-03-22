@@ -4,3 +4,7 @@ class HeaderExistsError(Exception):
 
 class DatasetExistsError(Exception):
     pass
+
+
+class NotCompiledError(Exception):
+    pass

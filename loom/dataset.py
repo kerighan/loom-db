@@ -1,6 +1,8 @@
 from numpy import (array, dtype, frombuffer, int8, int32, int64, str_, uint32,
                    uint64)
 
+from .exception import NotCompiledError
+
 PREFIX_DTYPE = int8
 blob_dt = dtype([("blob", uint32)])
 integer = (int, uint64, int64, uint32, int32)
@@ -23,7 +25,7 @@ class Dataset:
             del self._read_at
         if hasattr(self, "_write_at"):
             del self._write_at
-        if hasattr(self, "_db_append"):
+        if hasattr(self, "_db_appendNotCompiledError"):
             del self._db_append
         if hasattr(self, "_db_allocate"):
             del self._db_allocate
@@ -60,9 +62,9 @@ class Dataset:
         self._len = position
         self._has_blob = len(self._blob_fields) != 0
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # encoding and decoding functions
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     def _to_numpy(self, data):
         for f in self._string_fields:
@@ -134,9 +136,9 @@ class Dataset:
                 data.append(None)
         return data
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # overloading functions
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     def __repr__(self):
         txt = []
@@ -148,9 +150,9 @@ class Dataset:
     def __len__(self):
         return self._len
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # setters and getters
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     def _set_field_no_index(self, key, value):
         _, _, align, dt = self._field[key]
@@ -167,7 +169,11 @@ class Dataset:
         return int(block_index + row_index * self._len)
 
     def new_block(self, size):
-        return self._db_allocate(self._len * size)
+        try:
+            return self._db_allocate(self._len * size)
+        except AttributeError:
+            raise NotCompiledError(
+                "Please compile the database first")
 
     def append(self, **data):
         return self._db_append(self._to_bytes(data))
@@ -209,9 +215,13 @@ class Dataset:
         return res
 
     def set(self, block_index, row_index, data):
-        data_bytes = self._to_bytes(data)
-        index = self._get_index_from(block_index, row_index)
-        self._write_at(index, data_bytes)
+        try:
+            data_bytes = self._to_bytes(data)
+            index = self._get_index_from(block_index, row_index)
+            self._write_at(index, data_bytes)
+        except AttributeError:
+            raise NotCompiledError(
+                "Please compile the database first")
 
     def set_value(self, block_index, row_index, key, value):
         _, _, align, dt = self._field[key]
@@ -401,6 +411,7 @@ class Array(Dataset):
         self.name = name
         self._identifier = identifier
         self._dtype = dtype(dt)
+        self._dtypes = self._dtype
         self._dt_size = self._dtype.itemsize
         self._prefix = PREFIX_DTYPE(identifier).tobytes()
         self._prefix_size = len(self._prefix)

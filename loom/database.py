@@ -95,9 +95,9 @@ class DB:
                 self.encode = orjson.dumps
                 self.decode = orjson.loads
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # properties
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     @property
     def file_size(self):
@@ -126,9 +126,9 @@ class DB:
         fs = os.stat(self.filename).st_size
         return fs - self.index
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # datasets and header management
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     def _initialize(self):
         for datastructure in self.datastructures.values():
@@ -275,9 +275,15 @@ class DB:
         self.datastructures[name] = dstruct
         return dstruct
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # overloading methods
-    # =========================================================================
+    # -------------------------------------------------------------------------
+
+    def __getitem__(self, key):
+        try:
+            return self.datasets[key]
+        except KeyError:
+            return self.datastructures[key]
 
     def __enter__(self):
         return self
@@ -290,9 +296,9 @@ class DB:
         self.close()
         self.open()
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # data manipulation methods
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     def _allocate(self, bytes_size):
         # returns start and end indices of allocated data
@@ -329,9 +335,9 @@ class DB:
         blob_bytes = self.f.read(size)
         return self.decode(blob_bytes)
 
-    # =========================================================================
+    # -------------------------------------------------------------------------
     # file IO management methods
-    # =========================================================================
+    # -------------------------------------------------------------------------
 
     def _is_new_database(self):
         return not os.path.exists(self.filename) or self.file_size == 0
@@ -354,3 +360,85 @@ class DB:
 
     def __del__(self):
         self.close()
+
+
+class Dict:
+    def __init__(
+        self, filename,
+        flag="w",
+        dtype="blob",
+        use_hash=True,
+        max_key_len=30,
+        blob_zip=False,
+        cache_len=100000,
+        lru_cache=10000,
+        p_init=16,
+        probe_factor=.4
+    ):
+        from .datastructure import Hashmap
+        if not os.path.exists(filename) or flag == "n":
+            self.db = DB(filename, blob_zip=blob_zip, flag=flag)
+            self.db.create_header(max_key_len="uint8", use_hash="bool")
+            if use_hash:
+                self.data = self.db.create_dataset(
+                    "data", key="uint64", value=dtype)
+            else:
+                self.data = self.db.create_dataset(
+                    "data", key=f"U{max_key_len}", value=dtype)
+            self.table = self.db.create_datastructure(
+                "table", Hashmap(
+                    self.data, "key",
+                    cache_len=cache_len,
+                    p_init=p_init,
+                    probe_factor=probe_factor))
+            self.db.compile()
+
+            # initialize values
+            self.db.header["max_key_len"] = max_key_len
+            self.db.header["use_hash"] = use_hash
+        else:
+            self.db = DB(filename, blob_zip=blob_zip, flag=flag)
+            self.data = self.db["data"]
+            self.table = self.db["table"]
+            max_key_len = self.db.header["max_key_len"]
+            use_hash = self.db.header["use_hash"]
+
+        self.max_key_len = max_key_len
+        self.use_hash = use_hash
+        self.lru_cache = lru_cache
+        if lru_cache > 0:
+            from lru import LRU
+            self.lru = LRU(lru_cache)
+
+    def _hash(self, key, seed=0):
+        import mmh3
+        if not isinstance(key, str):
+            key = str(key)
+        return mmh3.hash(key, seed=seed, signed=False)
+
+    def __setitem__(self, key, value):
+        if self.lru_cache > 0:
+            self.lru[key] = value
+
+        if self.use_hash:
+            key_hash = self._hash(key)
+            self.table[key_hash] = {"value": value}
+        else:
+            self.table[key] = {"value": value}
+
+    def __getitem__(self, key):
+        if self.lru_cache > 0:
+            val = self.lru.get(key)
+            if val is not None:
+                return val
+
+        if self.use_hash:
+            key_hash = self._hash(key)
+            return self.table[key_hash]["value"]
+        else:
+            return self.table[key]["value"]
+
+    def __delitem__(self, key):
+        if self.use_hash:
+            key = self._hash(key)
+        del self.table[key]
