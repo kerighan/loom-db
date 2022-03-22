@@ -17,7 +17,7 @@ from tqdm import tqdm
 N = 100000
 X = np.random.random(size=(N, 100))
 
-db = loom.Dict("dict.loom", dtype="(100,)float32", flag="w")
+db = loom.Dict("dict.loom", dtype="(100,)float32")
 
 # insert data
 for i in tqdm(range(N), desc="write"):
