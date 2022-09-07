@@ -1,5 +1,5 @@
 import os
-from pickle import HIGHEST_PROTOCOL, dumps, loads
+import pickle
 
 from numpy import array, dtype, frombuffer, int8, uint32
 
@@ -15,7 +15,7 @@ class DB:
         filename,
         flag="w",
         blob_protocol="pickle",
-        blob_zip=False
+        blob_compression="brotli"
     ):
         """
         (str) filename: string name of the database file
@@ -23,7 +23,7 @@ class DB:
         (str) blob_protocol: protocol defining encoding and decoding functions
         """
         self.filename = filename
-        self._get_encoder_and_decoder(blob_protocol, blob_zip)
+        self._get_encoder_and_decoder(blob_protocol, blob_compression)
 
         # references to header, datasets and datastructures
         self.header = None
@@ -65,35 +65,39 @@ class DB:
             self.f = open(self.filename, "rb")
             self._load()
 
-    def _get_encoder_and_decoder(self, blob_protocol, blob_zip):
-        if blob_zip:
-            from zlib import compress, decompress
-            if blob_protocol == "pickle":
-                self.encode = lambda x: compress(dumps(
-                    x, protocol=HIGHEST_PROTOCOL))
-                self.decode = lambda x: loads(decompress(x))
-            elif blob_protocol == "ujson":
-                import ujson
-                self.encode = lambda x: compress(
-                    bytes(ujson.dumps(x), "utf8"))
-                self.decode = lambda x: ujson.loads(
-                    str(decompress(x), "utf8"))
-            elif blob_protocol == "orjson":
-                import orjson
-                self.encode = lambda x: compress(orjson.dumps(x))
-                self.decode = lambda x: orjson.loads(decompress(x))
+    def _get_encoder_and_decoder(self, blob_protocol, blob_compression):
+        # available compressions
+        if blob_compression is None:
+            def compress(x): return x
+            def decompress(x): return x
+        elif blob_compression == "zlib":
+            import zlib
+            compress = zlib.compress
+            decompress = zlib.decompress
+        elif blob_compression == "brotli":
+            import brotli
+            compress = brotli.compress
+            decompress = brotli.decompress
         else:
-            if blob_protocol == "pickle":
-                self.encode = lambda x: dumps(x, protocol=HIGHEST_PROTOCOL)
-                self.decode = loads
-            elif blob_protocol == "ujson":
-                import ujson
-                self.encode = lambda x: bytes(ujson.dumps(x), "utf8")
-                self.decode = lambda x: ujson.loads(str(x, "utf8"))
-            elif blob_protocol == "orjson":
-                import orjson
-                self.encode = orjson.dumps
-                self.decode = orjson.loads
+            raise ValueError(f"Compression {blob_compression} unknown")
+
+        # available protocols to transform python objects to bytes
+        if blob_protocol == "pickle":
+            def dumps(x): return pickle.dumps(x,
+                                              protocol=pickle.HIGHEST_PROTOCOL)
+
+            def loads(x): return pickle.loads(x)
+        elif blob_protocol == "orjson":
+            import orjson
+            dumps = orjson.dumps
+            loads = orjson.loads
+        elif blob_protocol == "ujson":
+            import ujson
+            dumps = ujson.dumps
+            loads = ujson.loads
+
+        self.encode = lambda x: compress(dumps(x))
+        self.decode = lambda x: loads(decompress(x))
 
     # -------------------------------------------------------------------------
     # properties
@@ -164,10 +168,10 @@ class DB:
         self._remove_database_reference()
 
         # dump header and datasets data
-        data_bytes = dumps({"header": self.header,
-                            "datasets": self.datasets,
-                            "datastructures": self.datastructures},
-                           protocol=HIGHEST_PROTOCOL)
+        data_bytes = pickle.dumps({"header": self.header,
+                                   "datasets": self.datasets,
+                                   "datastructures": self.datastructures},
+                                  protocol=pickle.HIGHEST_PROTOCOL)
         data_len_bytes = array(len(data_bytes), dtype=uint32).tobytes()
         pickle_bytes = data_len_bytes + data_bytes
         pickle_bytes_len = len(pickle_bytes)
@@ -188,7 +192,7 @@ class DB:
     def _load(self):
         self.f.seek(0)
         data_len = frombuffer(self.f.read(4), dtype=uint32)[0]
-        data = loads(self.f.read(data_len))
+        data = pickle.loads(self.f.read(data_len))
         # grab values if not already done
         if self.header is None:
             self.header = data["header"]

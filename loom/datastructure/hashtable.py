@@ -19,6 +19,12 @@ class BaseHashmap:
             key = str(key)
         return mmh3.hash(key, seed=seed, signed=False)
 
+    def get(self, key, res=None):
+        try:
+            return self.lookup(key)
+        except KeyError:
+            return res
+
     def __contains__(self, key):
         return self.contains(key)
 
