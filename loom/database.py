@@ -95,6 +95,10 @@ class DB:
             import ujson
             dumps = ujson.dumps
             loads = ujson.loads
+        elif blob_protocol == "cbor":
+            import cbor2
+            dumps = cbor2.dumps
+            loads = cbor2.loads
 
         self.encode = lambda x: compress(dumps(x))
         self.decode = lambda x: loads(decompress(x))
@@ -373,7 +377,8 @@ class Dict:
         dtype="blob",
         use_hash=True,
         max_key_len=30,
-        blob_zip=False,
+        blob_compression=None,
+        blob_protocol="pickle",
         cache_len=100000,
         lru_cache=10000,
         p_init=16,
@@ -381,7 +386,9 @@ class Dict:
     ):
         from .datastructure import Hashmap
         if not os.path.exists(filename) or flag == "n":
-            self.db = DB(filename, blob_zip=blob_zip, flag=flag)
+            self.db = DB(filename, flag=flag,
+                         blob_compression=blob_compression,
+                         blob_protocol=blob_protocol)
             self.db.create_header(max_key_len="uint8", use_hash="bool")
             if use_hash:
                 self.data = self.db.create_dataset(
@@ -401,7 +408,9 @@ class Dict:
             self.db.header["max_key_len"] = max_key_len
             self.db.header["use_hash"] = use_hash
         else:
-            self.db = DB(filename, blob_zip=blob_zip, flag=flag)
+            self.db = DB(filename, flag=flag,
+                         blob_compression=blob_compression,
+                         blob_protocol=blob_protocol)
             self.data = self.db["data"]
             self.table = self.db["table"]
             max_key_len = self.db.header["max_key_len"]
