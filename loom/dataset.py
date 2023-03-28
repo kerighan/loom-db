@@ -198,6 +198,15 @@ class Dataset:
                                    self._len * length)
         return self._parse_with_prefix(data_bytes)
 
+    def get_slice_as_bytes(self, block_index, s):
+        start = s.start or 0
+        stop = s.stop
+        length = stop - start
+        index = self._get_index_from(block_index, start)
+        data_bytes = self._read_at(index,
+                                   self._len * length)
+        return data_bytes
+
     def get_slice_values(self, block_index, s, field):
         start = s.start or 0
         stop = s.stop
@@ -213,6 +222,11 @@ class Dataset:
         data_bytes = self._read_at(index, dt_size)
         res = frombuffer(data_bytes, dtype=dt)[0]
         return res
+
+    def set_at_address(self, address, data):
+        # only when appending data
+        data_bytes = self._to_bytes(data)
+        self._write_at(address, data_bytes)
 
     def set(self, block_index, row_index, data):
         try:
@@ -456,6 +470,10 @@ class Array(Dataset):
     def __setitem__(self, args, value):
         return self.set_value(*args, value)
 
+    def __repr__(self):
+        txt = str(self._dtypes)
+        return self.name.capitalize() + "(" + txt + ")"
+
 
 class BoolArray(Dataset):
     def __init__(self, identifier, db, name):
@@ -507,3 +525,7 @@ class BoolArray(Dataset):
 
     def __setitem__(self, args, value):
         return self.set_value(*args, value)
+
+    def __repr__(self):
+        txt = str(self._dtypes)
+        return self.name.capitalize() + "(" + txt + ")"

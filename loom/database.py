@@ -154,15 +154,17 @@ class DB:
         for datastructure in self.datastructures.values():
             datastructure._add_database_reference(self)
 
-    def _add_header_from_datastructures(self):
+    def _compile_datastructures(self):
+        # for dstruct in self.datastructures.values():
+        #     fields = dstruct._get_header_fields()
+        #     for field, dt in fields.items():
+        #         self._header_fields[field] = dtype(dt)
         for dstruct in self.datastructures.values():
-            fields = dstruct._get_header_fields()
-            for field, dt in fields.items():
-                self._header_fields[field] = dtype(dt)
+            dstruct._compile(self)
 
     def _dump(self):
         # complete headers instructions from other datastructures
-        self._add_header_from_datastructures()
+        self._compile_datastructures()
 
         # build header
         self.header = Dataset(1, self, "header",
@@ -214,7 +216,7 @@ class DB:
 
         # initialize datastructures
         for dstruct in self.datastructures.values():
-            dstruct._initialize()
+            dstruct._load()
 
     def create_dataset(self, name, **kwargs):
         if name in self.datasets:

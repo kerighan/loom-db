@@ -1,4 +1,5 @@
 import mmh3
+from numpy import dtype
 from numpy import max as np_max
 from numpy import nonzero
 
@@ -58,11 +59,11 @@ class Hashmap(BaseHashmap):
         self.cache_len = cache_len
 
         self.dataset = dataset
-        self.dstruct_name = f"{dataset.name}_LHT"
-        self.tables_id_key = f"{self.dstruct_name}_tables_id"
-        self._block_id_key = f"{self.dstruct_name}_block_id"
-        self._bloom_id_key = f"{self.dstruct_name}_bloom_id"
-        self._bloom_filter_key = f"{self.dstruct_name}_bloom_filter"
+        self.dstruct_name = f"{dataset.name}_hashmap"
+        self.tables_id_name = f"{self.dstruct_name}_tables_id"
+        self._block_id_name = f"{self.dstruct_name}_block_id"
+        self._bloom_id_name = f"{self.dstruct_name}_bloom_id"
+        self._bloom_filter_name = f"{self.dstruct_name}_bloom_filter"
 
     # -------------------------------------------------------------------------
     # initialization
@@ -70,39 +71,41 @@ class Hashmap(BaseHashmap):
 
     def _get_header_fields(self):
         return {
-            f"{self._block_id_key}": "uint64",
-            f"{self._bloom_id_key}": "uint64",
+            f"{self._block_id_name}": "uint64",
+            f"{self._bloom_id_name}": "uint64",
         }
 
-    def _initialize(self):
-        # create header and arrays
-        self._block_id = self._db.header[self._block_id_key]
-        self._positions = self._db.create_array(self.tables_id_key, "uint64")
-        self._bloom = self._db.create_array(self._bloom_filter_key, "uint8")
-
+    def _load(self):
+        # create LRU cache if needed
         if self.cache_len > 0:
             from lru import LRU
             self.cache = LRU(self.cache_len)
 
+        # create header and arrays
+        self._block_id = self._db.header[self._block_id_name]
+        self._tables_pos = self._db.create_array(self.tables_id_name, "uint64")
+        self._bloom = self._db.create_array(self._bloom_filter_name, "uint8")
+
         # if not yet initialized
         if self._block_id == 0:
             # create array of hashtables positions
-            self._block_id = self._positions.new_block(32)
-            self._db.header[self._block_id_key] = self._block_id
+            self._block_id = self._tables_pos.new_block(32)
+            self._db.header[self._block_id_name] = self._block_id
             # allocate first table
             capacity = self._get_capacity(self.p_init)
             table_id = self.dataset.new_block(capacity)
-            self._positions.set_value(self._block_id, 0, table_id)
+            # initialize first table position
+            self._tables_pos.set_value(self._block_id, 0, table_id)
             self.p_last = self.p_init
             self._load_tables_id()
 
             if self.n_bloom_filters > 0:
                 # create array of bloom filters positions
-                self._bloom_id = self._positions.new_block(32)
-                self._db.header[self._bloom_id_key] = self._bloom_id
+                self._bloom_id = self._tables_pos.new_block(32)
+                self._db.header[self._bloom_id_name] = self._bloom_id
                 filter_id = self._bloom.new_block(
                     capacity * self.n_bloom_filters)
-                self._positions.set_value(self._bloom_id, 0, filter_id)
+                self._tables_pos.set_value(self._bloom_id, 0, filter_id)
                 self._load_bloom_filters()
                 self.find_lookup_position = self._find_lookup_position_filtered
         else:
@@ -110,7 +113,7 @@ class Hashmap(BaseHashmap):
             self.p_last = np_max(nonzero(self.tables_id)) + self.p_init
 
             if self.n_bloom_filters > 0:
-                self._bloom_id = self._db.header[self._bloom_id_key]
+                self._bloom_id = self._db.header[self._bloom_id_name]
                 self._load_bloom_filters()
                 self.find_lookup_position = self._find_lookup_position_filtered
 
@@ -124,15 +127,15 @@ class Hashmap(BaseHashmap):
     # -------------------------------------------------------------------------
 
     def _save_tables_id(self, index, table_id):
-        self._positions.set_value(self._block_id, index, table_id)
+        self._tables_pos.set_value(self._block_id, index, table_id)
 
     def _load_tables_id(self):
         self.tables_id = list(
-            self._positions.get_values(self._block_id, 0, 32))
+            self._tables_pos.get_values(self._block_id, 0, 32))
 
     def _load_bloom_filters(self):
         self.bloom_filters = list(
-            self._positions.get_values(self._bloom_id, 0, 32))
+            self._tables_pos.get_values(self._bloom_id, 0, 32))
 
     # -------------------------------------------------------------------------
     # utilities
@@ -179,6 +182,31 @@ class Hashmap(BaseHashmap):
         p, position = self._find_insert_position_in_table(
             key, key_hash, self.p_last)
         return p, position
+
+    def _find_insert_position_in_table(self, key, key_hash, p):
+        key_name = self.key
+
+        capacity = self._get_capacity(p)
+        bucket = key_hash % capacity
+        table_id = self.tables_id[p - self.p_init]
+        print(p, self._get_range(p), table_id, bucket)
+        print(self.status)
+
+        limit = int(round(p * self.probe_factor * self.growth_factor))
+        data = self.dataset.get_slice_as_bytes(
+            table_id, slice(bucket, bucket+limit))
+        for i in self._get_range(p):
+            position = (bucket + i) % capacity
+            status = self.status(table_id, position)
+            if status == 1:
+                key_current = self.get_value(
+                    table_id, position, key_name)
+                if key_current != key:
+                    continue
+                return p, position
+            else:
+                return p, position
+        raise KeyError
 
     def _find_insert_position_in_table(self, key, key_hash, p):
         key_name = self.key
@@ -271,7 +299,7 @@ class Hashmap(BaseHashmap):
         if self.n_bloom_filters > 0:
             filter_id = self._bloom.new_block(
                 capacity * self.n_bloom_filters)
-            self._positions.set_value(self._bloom_id, index, filter_id)
+            self._tables_pos.set_value(self._bloom_id, index, filter_id)
             self.bloom_filters[index] = filter_id
 
     def _insert_in_bloom(self, p, key):
@@ -324,3 +352,180 @@ class Hashmap(BaseHashmap):
             for i in range(capacity):
                 if self.exists(table_id, i):
                     yield self.get(table_id, i)
+
+
+class CompactHashmap(BaseHashmap):
+    def __init__(
+        self, dataset, growth_factor=2, p_init=10, probe_factor=.5, n_bloom_filters=10, key_dtype="U20"
+    ):
+        self.key_dtype = key_dtype
+
+        # hashtable parametrization
+        self.p_init = p_init
+        self.probe_factor = probe_factor
+        self.growth_factor = growth_factor
+        self.n_bloom_filters = n_bloom_filters
+
+        self.dataset = dataset
+        self.dstruct_name = f"{dataset.name}_hashmap"
+        self._tables_id_name = f"{self.dstruct_name}_tables_id"
+        self._addr_name = f"{self.dstruct_name}_addr"
+        self._bloom_id_name = f"{self.dstruct_name}_bloom_id"
+        self._bloom_filter_name = f"{self.dstruct_name}_bloom_filter"
+        self._hashmap_name = f"{self.dstruct_name}_hashmap_dataset"
+
+    # -------------------------------------------------------------------------
+    # initialization
+    # -------------------------------------------------------------------------
+
+    def _compile(self, db):
+        db._header_fields[self._addr_name] = dtype("uint64")
+        # db._header_fields[self._bloom_id_name] = dtype("uint64")
+        self._hashmap = db.create_dataset(
+            self._hashmap_name,
+            hash="uint64",
+            key=self.key_dtype,
+            address="uint64")
+        self._tables_pos = db.create_array(
+            self._tables_id_name, "uint64")
+
+    def _load(self):
+        # create header and arrays
+        self._tables_addr = self._db.header[self._addr_name]
+        self._tables_pos = self._db[self._tables_id_name]
+        self._hashmap = self._db[self._hashmap_name]
+
+        # if not yet initialized
+        if self._tables_addr == 0:
+            # create array of hashtables positions
+            self._tables_addr = self._tables_pos.new_block(32)
+            self._db.header[self._addr_name] = self._tables_addr
+
+            # allocate first table
+            capacity = self._get_capacity(self.p_init)
+            table_id = self._hashmap.new_block(capacity)
+            self._tables_pos.set_value(self._tables_addr, 0, table_id)
+            self.p_last = self.p_init
+            self._load_tables_id()
+        self.status = self._hashmap.status
+
+    def insert(self, key, data):
+        key_hash = self._hash(key)
+
+        p, position, item = self._scan_for_insert(
+            key, key_hash)
+
+        if item is None:
+            print("free:", p, position, item)
+            table_id = self.tables_id[p - self.p_init]
+            address = self.dataset.append(**data)
+            self._hashmap.set(table_id, position, {
+                "key": key, "hash": key_hash, "address": address})
+        else:
+            print("taken:", p, position, item)
+            address = item["address"]
+            self.dataset.set_at_address(address, data)
+            # self.dataset[address] = data
+            # self._db.write_at(address, )
+
+    def lookup(self, key):
+        key_hash = self._hash(key)
+
+        p, position, item, _ = self._find_insert_or_lookup_position(
+            key, key_hash)
+        if item is None:
+            raise KeyError
+        return self.dataset.get(item["address"])
+
+    # -------------------------------------------------------------------------
+    # utilities
+    # -------------------------------------------------------------------------
+
+    def _get_range(self, p,):
+        return int(round(p * self.probe_factor * self.growth_factor))
+
+    def _get_capacity(self, p):
+        return self.growth_factor**p
+
+    def __setitem__(self, key, data):
+        self.insert(key, data)
+
+    def _load_tables_id(self):
+        self.tables_id = list(
+            self._tables_pos.get_values(self._tables_addr, 0, 32))
+
+    # -------------------------------------------------------------------------
+    # positioning functions
+    # -------------------------------------------------------------------------
+
+    def _scan_for_insert(self, key, key_hash):
+        potential_position = None
+        for p in range(self.p_last, self.p_init - 1, -1):
+            # lookup in the pth table
+            table_id = self.tables_id[p - self.p_init]
+            capacity = self._get_capacity(p)
+            bucket = key_hash % capacity
+            limit = min(bucket+self._get_range(p), capacity)
+            data = self._hashmap[table_id, bucket:limit]
+            for i, item in enumerate(data):
+                position = bucket + i
+                if item is None:
+                    if potential_position is None:
+                        potential_position = p, position, item
+                else:
+                    if item["hash"] != key_hash:
+                        continue
+                    if item["key"] == key:
+                        return (p, position, item)
+        return potential_position
+
+        # try:
+        #     p, position, item = self.find_lookup_position(key, key_hash)
+        #     return p, position, item, False
+        # except KeyError:
+        #     p, position, item = self._find_insert_position(key, key_hash)
+        #     return p, position, item, True
+
+    def find_lookup_position(self, key, key_hash):
+        for p in range(self.p_last, self.p_init - 1, -1):
+            try:
+                p, position, item = self._find_lookup_position_in_table(
+                    key, key_hash, p)
+                return p, position, item
+            except KeyError:
+                pass
+        raise KeyError
+
+    def _find_lookup_position_in_table(self, key, key_hash, p):
+        capacity = self._get_capacity(p)
+        bucket = key_hash % capacity
+        table_id = self.tables_id[p - self.p_init]
+        limit = min(bucket+self._get_range(p), capacity)
+        data = self._hashmap[table_id, bucket:limit]
+        # raise ValueError
+        for i, item in enumerate(data):
+            position = bucket + i
+            if item is None:
+                return p, position, item
+            else:
+                if item["hash"] != key_hash:
+                    continue
+                if item["key"] == key:
+                    return p, position, item
+        raise KeyError
+
+        # for i in self._get_range(p):
+        #     position = (bucket + i) % capacity
+        #     status = self.status(table_id, position)
+        #     print(status)
+
+        #     if status == 1:
+        #         key_current = self.get_value(table_id, position, key_name)
+        #         if key_current != key:
+        #             continue
+        #         return p, position
+        #     elif status == -1:
+        #         continue
+        #     else:
+        #         raise KeyError
+        # raise KeyError
