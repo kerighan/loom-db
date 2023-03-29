@@ -1,10 +1,11 @@
 import os
 import pickle
 
-from numpy import array, dtype, frombuffer, int8, uint32
+from numpy import array, dtype, frombuffer, int8, uint32, ceil
 
 from .dataset import Array, BoolArray, Dataset, Group, blob_dt
 from .exception import DatasetExistsError, HeaderExistsError
+from .datastructure.array import List
 
 STEP_SIZE = 4096
 
@@ -15,7 +16,7 @@ class DB:
         filename,
         flag="w",
         blob_protocol="pickle",
-        blob_compression="brotli"
+        blob_compression=None,
     ):
         """
         (str) filename: string name of the database file
@@ -25,17 +26,22 @@ class DB:
         self.filename = filename
         self._get_encoder_and_decoder(blob_protocol, blob_compression)
 
+        self._id2size = {}
+        self._id2dataset = {}
+
         # references to header, datasets and datastructures
         self.header = None
         self.datasets = {}
         self.datastructures = {}
         self.commit = True
 
+        # blob management variables
+        self._block_size = 4096*2
+        self._slot_size = 32
+        self._n_slots_per_block = self._block_size // self._slot_size
+
         # internal list of header fields
         self._header_fields = {"_index": dtype("uint64")}
-
-        self._id2size = {}
-        self._id2dataset = {}
 
         # index of read/write head
         self._index = None
@@ -133,6 +139,10 @@ class DB:
     def _n_empty_slots(self):
         fs = os.stat(self.filename).st_size
         return fs - self.index
+    
+    @property
+    def _blocks_list(self):
+        return self.datastructures["_blocks_list"]
 
     # -------------------------------------------------------------------------
     # datasets and header management
@@ -155,10 +165,6 @@ class DB:
             datastructure._add_database_reference(self)
 
     def _compile_datastructures(self):
-        # for dstruct in self.datastructures.values():
-        #     fields = dstruct._get_header_fields()
-        #     for field, dt in fields.items():
-        #         self._header_fields[field] = dtype(dt)
         for dstruct in self.datastructures.values():
             dstruct._compile(self)
 
@@ -217,6 +223,9 @@ class DB:
         # initialize datastructures
         for dstruct in self.datastructures.values():
             dstruct._load()
+
+        self._slots = [self._blocks_list[i]
+                       for i in range(len(self._blocks_list))]
 
     def create_dataset(self, name, **kwargs):
         if name in self.datasets:
@@ -302,30 +311,53 @@ class DB:
         self.compile()
 
     def compile(self):
+        # create block list for blob management
+        _blocks = self.create_dataset(
+            "blocks", position="uint64", slots_taken="uint8")
+        self.create_datastructure("_blocks_list", List(_blocks))
+
         self._dump()
         self.close()
         self.open()
 
     # -------------------------------------------------------------------------
-    # data manipulation methods
+    # blob manipulation methods
     # -------------------------------------------------------------------------
-
-    def _allocate(self, bytes_size):
-        # returns start and end indices of allocated data
-        self._extend_file(bytes_size)
-        start = self.index
-        self.index += bytes_size
-        return start
 
     def _append(self, data_bytes):
         data_size = len(data_bytes)
-        # if there's no place left in the file, truncate
-        if self._n_empty_slots < data_size:
-            self._extend_file(max(STEP_SIZE, data_size))
+        n_slots = int(ceil(data_size / self._slot_size))
+        assert data_size <= self._block_size
 
-        index = self.index
-        self._write_at(index, data_bytes)
-        self.index += data_size
+        if len(self._slots) == 0:
+            # allocate a new block
+            index = self._allocate(self._block_size)
+            self._write_at(index, data_bytes)
+
+            slot = {"position": index, "slots_taken": n_slots}
+            self._slots = [slot]
+            self._blocks_list.append(slot)
+        else:
+            _slot_found = False
+            for i, slot in enumerate(self._slots):
+                slots_in_block = self._n_slots_per_block + i
+                if slots_in_block - slot["slots_taken"] < n_slots:
+                    continue
+                _slot_found = True
+                index = slot["position"] + self._slot_size * slot["slots_taken"]
+
+                self._write_at(index, data_bytes)
+                slot["slots_taken"] += n_slots
+                self._blocks_list[i] = slot
+            if not _slot_found:
+                # allocate a new block
+                slots_in_block = self._n_slots_per_block + len(self._slots)
+                index = self._allocate(self._slot_size * slots_in_block)
+                self._write_at(index, data_bytes)
+
+                slot = {"position": index, "slots_taken": n_slots}
+                self._slots.append(slot)
+                self._blocks_list.append(slot)
         return index
 
     def append_blob(self, blob):
@@ -348,6 +380,13 @@ class DB:
     # -------------------------------------------------------------------------
     # file IO management methods
     # -------------------------------------------------------------------------
+
+    def _allocate(self, bytes_size):
+        # returns start and end indices of allocated data
+        self._extend_file(bytes_size)
+        start = self.index
+        self.index += bytes_size
+        return start
 
     def _is_new_database(self):
         return not os.path.exists(self.filename) or self.file_size == 0

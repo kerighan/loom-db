@@ -1,9 +1,9 @@
 from numpy import dtype
 import numpy as np
-from . import DataStructure
+from .base import DataStructure
 
 
-class Array(DataStructure):
+class List(DataStructure):
     def __init__(
         self, dataset, start_size=512, growth_factor=1.33
     ):
@@ -49,9 +49,7 @@ class Array(DataStructure):
             table_id = self.dataset.new_block(self.start_size)
             self._tables_pos.set_value(self._tables_addr, 0, table_id)
 
-            self._load_tables_id()
-        else:
-            pass
+        self._load_tables_id()
 
     # -------------------------------------------------------------------------
     # refresh functions
@@ -62,11 +60,28 @@ class Array(DataStructure):
 
     def _load_tables_id(self):
         self.tables_id = list(
-            self._tables_pos.get_values(self._tables_addr, 0, 32))
+            self._tables_pos.get_values(self._tables_addr, 0, 64))
 
     # -------------------------------------------------------------------------
     # public functions
     # -------------------------------------------------------------------------
+
+    def __setitem__(self, position, value):
+        self.insert(position, value)
+
+    def insert(self, position, value):
+        index = self._db.header[self._index_name]
+        if position >= index:
+            raise IndexError("list index out of range")
+
+        table_number = np.searchsorted(self._table_sizes, position)
+        if table_number != 0:
+            table_index = int(
+                position - self._table_sizes[table_number - 1] - 1)
+        else:
+            table_index = position
+        table_id = self.tables_id[table_number]
+        return self.dataset.set(table_id, table_index, value)
 
     def append(self, value):
         index = self._db.header[self._index_name]
@@ -87,7 +102,9 @@ class Array(DataStructure):
         self._db.header[self._index_name] = index + 1
 
     def lookup(self, position):
-        if isinstance(position, slice):
+        if isinstance(position, int):
+            return self.lookup_single_value(position)
+        elif isinstance(position, slice):
             start = position.start
             stop = position.stop
             step = position.step
@@ -99,8 +116,8 @@ class Array(DataStructure):
                 step = 1
             return [self.lookup_single_value(i)
                     for i in range(start, stop, step)]
-        else:
-            return self.lookup_single_value(position)
+        elif isinstance(position, (list, np.ndarray)):
+            return [self.lookup_single_value(i) for i in position]
 
     def lookup_single_value(self, position):
         index = self._db.header[self._index_name]
