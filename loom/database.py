@@ -36,7 +36,7 @@ class DB:
         self.commit = True
 
         # blob management variables
-        self._block_size = 4096*2
+        self._block_size = 4096*3
         self._slot_size = 32
         self._n_slots_per_block = self._block_size // self._slot_size
 
